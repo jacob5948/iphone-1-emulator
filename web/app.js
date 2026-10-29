@@ -27,6 +27,35 @@ const describeError = error => error?.message || error?.name || String(error || 
 const queryCpi = Number.parseInt(new URLSearchParams(location.search).get('cpi'), 10);
 const cpi = Number.isInteger(queryCpi) && queryCpi >= 1 && queryCpi <= 16 ? queryCpi : 1;
 
+// The virtual Wi-Fi network needs a relay (tools/net/netrelay.c) to reach
+// the internet. ?relay=wss://host/ chooses one and remembers it; ?relay=off
+// forgets it. A local development server defaults to a local relay.
+const RELAY_KEY = 'iphone1.relay';
+function storedRelay() {
+  try { return localStorage.getItem(RELAY_KEY); } catch { return null; }
+}
+function rememberRelay(url) {
+  try { url ? localStorage.setItem(RELAY_KEY, url) : localStorage.removeItem(RELAY_KEY); } catch {}
+}
+function initialRelay() {
+  const asked = new URLSearchParams(location.search).get('relay');
+  if (asked === 'off') { rememberRelay(null); return null; }
+  if (asked && /^wss?:\/\//.test(asked)) { rememberRelay(asked); return asked; }
+  const stored = storedRelay();
+  if (stored) return stored;
+  const meta = document.querySelector('meta[name="iphone-relay"]')?.content;
+  if (meta) return meta;
+  if (['localhost', '127.0.0.1'].includes(location.hostname)) return `ws://${location.hostname}:8090/`;
+  return null;
+}
+let relay = initialRelay(), netState = relay ? 'connecting' : 'off';
+function showNetwork() {
+  const labels = {off:'Wi‑Fi: no relay', connecting:'Wi‑Fi: connecting…', connected:'Wi‑Fi: online',
+    disconnected:'Wi‑Fi: offline', error:'Wi‑Fi: relay error'};
+  $('network').textContent = labels[netState] || 'Wi‑Fi';
+  $('network').title = relay ? `Relay ${relay}` : 'Choose a relay to give the phone internet access';
+}
+
 function call(type, fields = {}, transfer = []) {
   if (!worker) return Promise.reject(new Error('iPhone is not running'));
   const id = ++sequence;
@@ -47,6 +76,7 @@ function controls() {
   $('reset').disabled = saving || !profileOwned;
   $('recover').disabled = saving || !profileOwned;
   $('offline').disabled = !ready || preparingOffline || !('serviceWorker' in navigator);
+  $('network').disabled = !ready;
   canvas.style.pointerEvents = ready && !paused ? '' : 'none';
 }
 function fail(error) {
@@ -137,7 +167,10 @@ async function start(recovery = null) {
       $('diagnostics').textContent = `${message.mips.toFixed(2)} M instructions/s\n` +
         `${message.fps.toFixed(1)} changed frames/s · ${message.guestRate.toFixed(2)}× guest time\n` +
         `Instruction ${message.cycles.toLocaleString()} · WASM heap ${(message.memory / 1048576).toFixed(0)} MiB\n` +
-        `Snapshot capture: ${captureMs?.toFixed(0) || '—'} ms\n\n${serial}`;
+        `Snapshot capture: ${captureMs?.toFixed(0) || '—'} ms\n` +
+        `Wi‑Fi card ${message.wifi & 2 ? 'running' : 'idle'}${message.wifi & 4 ? ' · associated' : ''} · relay ${message.net}\n\n${serial}`;
+    } else if (message.type === 'net') {
+      netState = message.state; showNetwork();
     } else if (message.type === 'log') serial = (serial + message.message + '\n').slice(-16000);
     else if (message.type === 'fatal') {
       for (const req of pending.values()) req.reject(new Error(message.message));
@@ -146,7 +179,7 @@ async function start(recovery = null) {
   };
   startTime = performance.now();
   const checkpoint = savedRecord ? await checkpointBytes(savedRecord) : null;
-  worker.postMessage({type:'start', cpi, checkpoint}, checkpoint ? [checkpoint] : []);
+  worker.postMessage({type:'start', cpi, checkpoint, relay}, checkpoint ? [checkpoint] : []);
 }
 
 // Browsers start audio only from a user gesture; the guest keeps running silently until then.
@@ -281,6 +314,16 @@ function download(blob, name) {
   a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 $('save').addEventListener('click', () => save(true));
+$('network').addEventListener('click', () => {
+  const answer = prompt('Wi‑Fi relay address (ws:// or wss://). Leave empty to turn the network off.', relay || 'wss://');
+  if (answer === null) return;
+  const url = answer.trim();
+  if (url && !/^wss?:\/\/./.test(url)) { setStatus('A relay address starts with ws:// or wss://'); return; }
+  relay = url || null; rememberRelay(relay);
+  netState = relay ? 'connecting' : 'off'; showNetwork();
+  call('relay', {url:relay}).catch(error => setStatus(error.message));
+});
+showNetwork();
 // Updates wait for every phone tab to close, so a running guest keeps one
 // matching shell/manifest/WASM bundle. Keep this notice separate from save status.
 const updateNotice = document.createElement('p');

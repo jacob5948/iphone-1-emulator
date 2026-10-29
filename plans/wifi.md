@@ -1,68 +1,144 @@
-# Plan: Marvell 88W8686 SDIO Wi-Fi + host bridging
+# Wi-Fi: Marvell 88W8686 over SDIO, bridged to the host
 
-> Current evidence: [networking investigation](networking.md) corrects the physical address, prelinked-driver location, and exact first command gate. The files below are a proposal; no SDIO model exists yet.
+**Status (2026-10-29): working in the production phone.** The genuine
+`AppleS5L8900XSDIO` and `AppleMRVL868x` drivers enumerate the card, download
+the original helper and main firmware, and bring up the Wi-Fi interface.
+Settings → Wi-Fi lists **iPhone Virtual Wi-Fi**, the phone joins it, gets an
+address over DHCP, and the original Safari loads web pages through it. This was
+verified natively (`iphone1 --net user`) and in the browser through the
+WebSocket relay, both from the new default phone. No Apple binary is patched.
 
-## Goal
-Emulate the original iPhone’s Marvell 88W8686 SDIO Wi-Fi module well enough that the genuine iPhone OS 1.0 SDIO host driver, Marvell driver, `wifid`, and `configd` bring up an `en0` interface, join a fake access point, and let MobileSafari load real HTTP pages over a host NAT.
+The earlier isolated investigation that this builds on is in
+[networking.md](networking.md) (milestones 057–077).
 
-## Background
-- The SDIO host controller lives at `0x00d00000` on VIC line `0x2a`; the device-tree node is `/arm-io/sdio`.
-- The genuine drivers and firmware live in the work image under `/System/Library/Extensions/` (Apple SDIO host and Marvell/Wireless kexts) and `/usr/share/firmware/`.
-- References: Linux `drivers/net/wireless/marvell/libertas/if_sdio.c` (helper + main firmware download, `IF_SDIO_*` register layout, command/response protocol), openiBoot/iphonelinux `sdio.c`/`wlan.c` for S5L8900 host register details, and Apple driver disassembly from the rootfs.
+## How it fits together
 
-## Approach
-The guest driver’s expectations win over any Linux/Apple driver assumptions. Use `tools/firmware/hfsx_extract.py` + `capstone` to inspect the real kexts, then emulate what the guest asks for.
+```
+guest TCP/IP ── AppleMRVL868x ── IOSDIOFamily ── AppleS5L8900XSDIO
+                                                        │ MMIO 0x38d00000, VIC1 line 10
+                                       core/src/soc/sdio.c      controller + SDIO card layer
+                                       core/src/soc/wlan8686.c  firmware download + firmware protocol
+                                                        │ Ethernet II frames
+                                  s5l8900_set_net_tx() / s5l8900_net_rx()
+                       ┌────────────────────────────────┴───────────────────────────┐
+     native: tools/iphone1.c --net user                 browser: web/emu_api.c + emu-worker.js
+     tools/net/net_slirp.c (libslirp NAT)                 WebSocket ── tools/net/netrelay.c
+                                                                       (per-phone libslirp NAT)
+```
 
-### 1. SDIO host controller (`core/src/soc/sdio.c`)
-- Command/response registers (CMD, ARG, RSPn, status, block size, transfer count).
-- Block/byte transfers with data FIFO/DMA (PL080 if the driver uses it) and completion interrupts.
-- Card-detect, bus width, clock enable, and error interrupts.
-- Attach only to the M68 machine.
+- **Controller** (`sdio.c`): the register map derived from the driver and
+  cold-boot traces (see `core/include/sdio.h`). Commands complete inside the
+  store that executes them. A data phase completes, and a new card interrupt
+  cause becomes visible, `SDIO_COMPLETION_TICKS` (80 timebase ticks, about
+  13 µs) later; both are declared as a WFI wake source. IRQ bit 0 is
+  command/DMA completion, bit 1 the card interrupt, latched on each new cause.
+  DMA stores are reported through `ram_written` like CPU stores.
+- **Card** (`sdio.c` + `wlan8686.c`): CMD0/3/5/7/52/53, CCCR/FBR/CIS, the
+  function-1 registers libertas documents (`+0x03` HOST_POWER_UP, `+0x04/05`
+  interrupt mask/status, write-zero-to-clear, `+0x10/11` requested download
+  length, `+0x20` IO_RDY|DL_RDY, `+0x34/35` scratch = upload length or
+  `0xfedc`). The reset GPIO `0x0607` power-cycles the card.
+- **Firmware**: never executed. The helper stream is counted, then the main
+  image is pulled in 16-byte-header / body pieces exactly as the genuine helper
+  requests them until the command-4 handoff; then the card answers the
+  firmware command protocol (libertas layouts) for one open access point:
+  BSSID `02:1a:11:00:00:01`, channel 6, −45 dBm. Data downloads are TxPD +
+  Ethernet; received frames are uploaded as RxPD + 802.3/LLC-SNAP, as the
+  real radio delivers them.
+- **Device tree**: the template's `/arm-io/sdio` has an all-zero MAC and
+  all-zero `tx-calibration`; the driver rejects both. The OS 1.0 boot path
+  (`bringup_os1.c`) writes MAC `02:00:00:00:01:01` and renames the calibration
+  property in place, which the driver accepts as "no calibration data".
 
-### 2. 88W8686 SDIO device (`core/src/soc/wlan8686.c`)
-- SDIO function 1: CCCR/FBR, function enable, block size, interrupt pending.
-- Firmware download handshake: accept the helper firmware, then the main firmware images; manage `CMD_GET_HW_SPEC`, `CMD_802_11_MAC_ADDRESS`.
-- Command/response/event/data queues and TX/RX packet descriptors.
-- A fake open AP named `iphone-1` that is always visible in scans, accepts open-auth association, reports RSSI and a MAC address.
-- Convert between 802.11/Marvell RX/TX descriptors and raw 802.3 Ethernet frames.
-- Add both SDIO host and WLAN device state to snapshots with a version bump.
+## What the genuine driver needed (and how each was found)
 
-### 3. Host network seam
-- Callbacks on the board context: `net_tx(ctx, frame, len)` guest → host and `s5l8900_net_rx(m, frame, len)` host → guest.
-- No sockets or host IO inside `core/`.
+All of these come from the driver's own behaviour, mostly by booting with
+`marvel-debug=0xffffffff` in the boot arguments (the driver then logs every
+command, response and event to the serial console) and disassembling the
+prelinked `AppleMRVL868x`:
 
-### 4. Native backend (`tools/iphone1.c`)
-- If `libslirp-dev`/`pkg-config slirp` is present, use libslirp for user-mode NAT; guard with `CMAKE` option so the build still works without it.
-- Otherwise a minimal built-in NAT (ARP + DHCP + DNS forwarding + TCP proxying via host sockets).
-- Harness flags: `--net slirp` and `--net pcap FILE` for a pcap of guest frames.
+1. **DEEP_SLEEP (0x003e) is not answered, and the sleeping card raises no
+   download-ready interrupt.** The driver retires the command itself (it
+   decrements its outstanding count at `c0385cac`). Answering it, or raising
+   DNLD, makes its idle path queue another sleep, wake the card to send it,
+   and loop thousands of times.
+2. **Waking needs both an event and DNLD.** The host writes HOST_POWER_UP to
+   function-1 `+0x03`; the card answers with event 16 (DEEP_SLEEP_AWAKE) and a
+   download-ready interrupt. The driver sends queued commands only from the
+   DNLD interrupt (it sets `+0x627` and calls the dispatcher at `c03830b8`);
+   without it a Settings scan is queued forever behind a sleeping card.
+3. **ASSOCIATE (0x0050) is answered as 0x8012**, not `0x8050`. The response
+   dispatcher's jump table (`c0387ce8`) sends only `0x8012` to the join
+   handler; `0x8050` is an unknown response and the join fails with
+   "Unable to join the network".
+4. **Scans are per channel.** Each SCAN carries a channel-list TLV (`0x0101`)
+   with one channel; the AP answers only on its own channel.
+5. **No interrupt before the waiter sleeps.** Completion of a data phase is
+   delayed slightly; with instantaneous completion the driver can miss the
+   wakeup. (In practice the main-image download speed is governed by the boot
+   arguments, below.)
 
-### 5. Browser seam (`web/emu_api.c` + `web/app.js`)
-- Export `emu_net_rx` and a JS-callable `emu_net_poll_tx` so a future JS backend can forward frames.
-- A no-op stub in `web/app.js` is fine for now.
+Commands the driver uses that are answered by echoing the request with result
+0 include MAC_REG/RF_REG access (0x0019/0x001b), INACTIVITY_TIMEOUT (0x0067),
+SUBSCRIBE_EVENT (0x0075), HOST_SLEEP_CFG (0x0043), ENABLE_RSN (0x002f),
+SET_WEP (0x0013) and PS_MODE (0x0021). They are counted as `unknown_commands`
+in the harness's `wifi:` summary line.
 
-## Files to touch
-- New `core/src/soc/sdio.c`, `core/src/soc/sdio.h`
-- New `core/src/soc/wlan8686.c`, `core/src/soc/wlan8686.h`
-- `core/src/board/m68.c` — attach SDIO + WLAN for M68 only
-- `core/src/soc/machine.c` or `core/include/soc.h` — host `net_tx`/`net_rx` callbacks
-- `core/src/snapshot.c` — version bump and SDIO/WLAN state
-- `core/tests/test_soc.c` — SDIO command round-trip, CCCR/FBR read, firmware-download state machine, one TX frame reaching `net_tx`, one RX frame becoming a Marvell RX descriptor
-- `tools/iphone1.c`, `tools/CMakeLists.txt` — libslirp detection, `--net` flags
-- `web/emu_api.c`, `web/app.js` — network seam exports
-- `docs/iphone1_1_os1_port.md` — SDIO/MMIO discoveries, command list, remaining gaps
+## Boot timing
 
-## Milestones
-1. SDIO host driver enumerates the card (`CMD0/5/3/7`, CCCR reads, function enable); serial shows the Marvell driver starting and downloading firmware.
-2. Firmware download completes; `wifid`/`configd` create `en0`. In Settings → Wi‑Fi the toggle is enabled and the fake `iphone-1` network appears.
-3. Tap join → association → DHCP via host NAT → MobileSafari loads `http://example.com/` (2007 Safari may fail HTTPS because of old TLS; HTTP is the target). Screenshot the rendered page.
+With the browser's boot arguments (`debug=0x8 serial=3 rd=md0 -v`) the whole
+firmware download finishes by about 0.69 billion instructions and the home
+screen appears by about 2 billion. Without `serial=3`,
+`IOAccessoryPortSerial::serialThread` spins on uart0 in kernel mode and each of
+the 467 main-image transfers waits about 33 million instructions behind it,
+so the download alone takes about 8 billion. Native experiments should
+therefore always pass the documented `--cmdline`.
 
-Use **cold boot** for Wi‑Fi verification, not the shipped snapshot, because the snapshot was taken before SDIO existed.
+## Using it
 
-## Correctness gates
-- All existing tests pass; add `core/tests` coverage.
-- `git diff --check` clean.
-- WASM build compiles (network backend may be no-op in browser).
-- Screenshot of Settings → Wi‑Fi showing the fake network and, if milestone 3 is reached, Safari loading example.com.
+- Native: `iphone1 ... --net user [--net-pcap FILE]`. libslirp is optional at
+  build time (`libslirp-dev`); the harness lets the guest reach the host's own
+  services at 10.0.2.2.
+- Browser: run `tools/net/netrelay` somewhere reachable and choose it with the
+  **Wi-Fi** button (or `?relay=wss://…`). A page on localhost uses
+  `ws://localhost:8090/`. See [tools/net/README.md](../tools/net/README.md),
+  including the restrictions a public relay needs.
+- Join from Settings → Wi-Fi, or from the "Select a Wi-Fi Network" prompt the
+  OS shows when an app needs the network.
 
-## Deliverable
-A PR from a branch `wifi` targeting `main`.
+## Snapshots and saved phones
+
+The card's state is an optional `SDIO` section between `STUB` and `END`,
+written only once the guest has touched the controller, so every existing
+checkpoint and every machine that never used the card still reads and writes
+byte-identical v39 files. Restoring a file without the section leaves the card
+as the board attached it, never enumerated.
+
+Phones saved before this change booted without the card, and the driver gave
+up on it then, so **they have no Wi-Fi until Reset** (export first). The new
+default phone, `web/firmware/home_1A543a_wifi.snap.gz.part*`, was cold-booted
+with the card present; `web/manifest.json` points at those names on the
+firmware host. They must be uploaded to `https://iphone.files.garden/` before
+the site is deployed.
+
+## Verification
+
+- `core/tests/test_sdio.c`: 73 checks through the machine's own bus with the
+  driver's descriptors, covering enumeration, helper and main download, the
+  command round trip, per-channel scan and join, frames in both directions,
+  deep sleep and wake, the reset pin and snapshot round trips.
+- All 43 native suites, 124 JavaScript unit tests, the WASM smoke test and
+  the interpreter/JIT whole-machine replay on the new snapshot pass.
+- Cold boot → Settings → Wi-Fi → join → Safari → `http://10.0.2.2:8000/`
+  rendered, natively and in Chromium through `netrelay`; DHCP, ARP and the
+  HTTP exchange are visible in `--net-pcap` captures.
+
+## Not done yet
+
+- Only one open network is advertised; WPA (the AP side of the EAPOL
+  handshake) is not modelled.
+- IEEE power-save (PS_MODE) is accepted but no PS_SLEEP/PS_AWAKE events are
+  generated.
+- Modern HTTPS sites need TLS the 2007 SSL stack does not offer; a TLS
+  compatibility gateway is separate work.
+- The relay has no bandwidth limit beyond the process-per-phone cap.

@@ -485,6 +485,32 @@ static uint8_t *machine_host_ram(void *ctx, uint32_t pa, uint32_t len) {
     return m->ram + (pa - m->ram_base);
 }
 
+/* A DMA store into DRAM, reported exactly as bus_write() reports a CPU
+ * store, so code and block caches keyed on guest memory stay coherent. */
+static void sdio_ram_written(void *ctx, const uint8_t *host, uint32_t len) {
+    s5l8900_t *m = ctx;
+    if (m->bus.ram_written) m->bus.ram_written(m->bus.ctx, host, len);
+}
+
+/* What the SDIO device may reach for one access: DRAM for its DMA phase and
+ * the host's Ethernet sink. Rebuilt per access, never stored in the device. */
+static s5l_sdio_env_t sdio_env(s5l8900_t *m) {
+    s5l_sdio_env_t env;
+    env.ram = machine_host_ram;
+    env.ram_written = sdio_ram_written;
+    env.ctx = m;
+    env.net_tx = m->net_tx;
+    env.net_ctx = m->net_ctx;
+    env.trace = m->trace_devices ||
+        m->mmio_watch_page == S5L8900_SDIO_BASE;
+    return env;
+}
+
+static inline bool in_sdio(const s5l8900_t *m, uint32_t a, unsigned bytes) {
+    return m->sdio.present &&
+           mmio_word(a, bytes, S5L8900_SDIO_BASE, S5L8900_DEV_SIZE);
+}
+
 static uint32_t bus_read(void *ctx, uint32_t addr, unsigned bytes) {
     s5l8900_t *m = ctx;
 
@@ -592,6 +618,11 @@ static uint32_t bus_read(void *ctx, uint32_t addr, unsigned bytes) {
     } else if ((bytes == 1u || bytes == 2u || bytes == 4u) &&
                in_window(addr, bytes, m->nor_base, m->nor.size)) {
         v = s5l_nor_read(&m->nor, addr - m->nor_base, bytes);
+    } else if (in_sdio(m, addr, bytes)) {
+        /* Word accesses only, like the other controllers: every load and
+         * store in AppleS5L8900XSDIO is a 32-bit ldr/str. */
+        s5l_sdio_env_t env = sdio_env(m);
+        v = s5l_sdio_read(&m->sdio, addr - S5L8900_SDIO_BASE, &env);
     } else {
         s5l_stub_t *s = find_stub(m, addr, bytes);
         if (!s) {
@@ -778,6 +809,14 @@ static void bus_write(void *ctx, uint32_t addr, uint32_t val, unsigned bytes) {
         s5l_nor_write(&m->nor, addr - m->nor_base, val, bytes);
         return;
     }
+    if (in_sdio(m, addr, bytes)) {
+        /* A command or data phase completes inside this store; its DMA
+         * touches DRAM directly, never this bus, so nothing re-enters. */
+        s5l_sdio_env_t env = sdio_env(m);
+        note_device(m, addr, val, true);
+        s5l_sdio_write(&m->sdio, addr - S5L8900_SDIO_BASE, val, &env);
+        return;
+    }
     {
         s5l_stub_t *s = find_stub(m, addr, bytes);
         if (s) {
@@ -924,6 +963,33 @@ bool s5l8900_set_uart4_host(s5l8900_t *m, s5l_uart4_host_tx_fn tx,
     m->uart4_host_tx = tx;
     m->uart4_host_service = service;
     return true;
+}
+
+void s5l8900_set_net_tx(s5l8900_t *m, s5l_net_tx_fn tx, void *ctx) {
+    if (!m) return;
+    m->net_tx = NULL;
+    m->net_ctx = ctx;
+    m->net_tx = tx;
+}
+
+bool s5l8900_net_rx(s5l8900_t *m, const uint8_t *frame, size_t len) {
+    if (!m || !frame) return false;
+    bool ok = s5l_wlan_rx_frame(&m->sdio, frame, len);
+    /* The upload raised a card interrupt; let the next refresh latch it. */
+    m->level_dirty = true;
+    s5l8900_tick(m, 0u);
+    return ok;
+}
+
+void s5l8900_wifi_set_ap(s5l8900_t *m, bool enabled) {
+    if (!m) return;
+    s5l_wlan_set_ap(&m->sdio, enabled);
+    m->level_dirty = true;
+    s5l8900_tick(m, 0u);
+}
+
+bool s5l8900_wifi_associated(const s5l8900_t *m) {
+    return m && m->sdio.present && m->sdio.associated;
 }
 
 bool s5l8900_set_uart0_host(s5l8900_t *m, s5l_uart4_host_tx_fn tx,
@@ -1236,6 +1302,17 @@ static s5l_wake_kind_t wake_edge_dmac(const s5l8900_t *m, uint32_t *ticks) {
     return S5L_WAKE_AT;
 }
 
+/* The SDIO controller's next data completion or card interrupt cause, both
+ * counted down in timebase ticks by s5l_sdio_tick(). A frame the host injects
+ * through s5l8900_net_rx() is the uart4 case: the host refreshes and wakes
+ * the core itself. */
+static s5l_wake_kind_t wake_edge_sdio(const s5l8900_t *m, uint32_t *ticks) {
+    uint32_t at = m->sdio.present ? s5l_sdio_next_event(&m->sdio) : 0u;
+    if (!at) return S5L_WAKE_NEVER;
+    *ticks = at;
+    return S5L_WAKE_AT;
+}
+
 static const s5l_wake_source_t WAKE_SOURCES[] = {
     { "timer", S5L8900_IRQ_TIMER, wake_edge_timer },
     { "clcd",  S5L8900_IRQ_CLCD,  wake_edge_clcd  },
@@ -1254,6 +1331,7 @@ static const s5l_wake_source_t WAKE_SOURCES[] = {
     { "uart4-rx", S5L8900_IRQ_UART4, wake_edge_uart4 },
     { "dmac0", S5L8900_IRQ_DMAC0, wake_edge_dmac },
     { "dmac1", S5L8900_IRQ_DMAC1, wake_edge_dmac },
+    { "sdio",  S5L8900_IRQ_SDIO,  wake_edge_sdio },
 };
 #define NWAKE_SOURCES (sizeof WAKE_SOURCES / sizeof WAKE_SOURCES[0])
 
@@ -1947,6 +2025,15 @@ static void s5l8900_refresh(s5l8900_t *m, uint32_t tb) {
      * today, so this changes no behaviour now; it removes a trap for the next
      * device that needs a line above 31.
      */
+    /* The SDIO controller, flat line 42: VIC1 line 10. Its IRQ register
+     * latches the card interrupt here, so this must run before the VICs are
+     * read below. */
+    if (m->sdio.present) {
+        s5l_sdio_tick(&m->sdio, tb);
+        s5l_vic_set_line(&m->vic[S5L8900_IRQ_SDIO / 32u],
+                         S5L8900_IRQ_SDIO % 32u, s5l_sdio_irq(&m->sdio));
+    }
+
     bool irq = false, fiq = false;
     for (unsigned i = 0; i < S5L8900_VIC_COUNT; i++) {
         irq |= s5l_vic_irq(&m->vic[i]);

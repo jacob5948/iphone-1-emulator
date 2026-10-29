@@ -4,6 +4,9 @@
 #include "lzss.h"
 #include "snapshot.h"
 #include <errno.h>
+#ifdef IPHONE1_HAVE_SLIRP
+#include "net/net_slirp.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -200,6 +203,8 @@ static void dump_va(s5l8900_t *m, uint32_t va, unsigned words) {
 static void usage(void) {
     puts("iphone1 --board m68|n82 --kernel PATH --devicetree PATH [options]\n"
          "  --cpi N           cycles per retired instruction, 1..16, default 1\n"
+         "  --net user        connect the virtual Wi-Fi network through libslirp\n"
+         "  --net-pcap FILE   record the virtual network's frames\n"
          "  --dump-ram FILE  write the guest RAM image when the run ends");
 }
 
@@ -248,8 +253,59 @@ static bool input_touch(s5l8900_t *m, const input_event_t *event) {
     return s5l8900_set_touch(m, &contact, 1u);
 }
 
+/* --net user: the virtual Wi-Fi network's far end, through libslirp. Frames
+ * cross in both directions through queues serviced between run slices, so
+ * slirp never re-enters the machine from inside a guest SDIO store. */
+typedef struct { uint16_t len; uint8_t data[1536]; } net_frame_t;
+#define NET_QUEUE 64u
+static net_frame_t g_net_out[NET_QUEUE]; static unsigned g_net_out_n;
+static FILE *g_net_pcap;
+static void pcap_frame(const uint8_t *f, size_t n) {
+    if (!g_net_pcap) return;
+    uint32_t h[4] = { 0, 0, (uint32_t)n, (uint32_t)n };
+    fwrite(h, sizeof h, 1, g_net_pcap); fwrite(f, 1, n, g_net_pcap); fflush(g_net_pcap);
+}
+static void net_from_guest(void *ctx, const uint8_t *f, size_t n) {
+    (void)ctx;
+    if (n > sizeof g_net_out[0].data || g_net_out_n >= NET_QUEUE) return;
+    g_net_out[g_net_out_n].len = (uint16_t)n;
+    memcpy(g_net_out[g_net_out_n++].data, f, n);
+}
+#ifdef IPHONE1_HAVE_SLIRP
+static net_slirp_t *g_net;
+static net_frame_t g_net_in[NET_QUEUE]; static unsigned g_net_in_n;
+static void net_to_guest(void *ctx, const uint8_t *f, size_t n) {
+    (void)ctx;
+    if (n > sizeof g_net_in[0].data || g_net_in_n >= NET_QUEUE) return;
+    g_net_in[g_net_in_n].len = (uint16_t)n;
+    memcpy(g_net_in[g_net_in_n++].data, f, n);
+}
+static void net_log(void *ctx, const char *msg) { (void)ctx; fprintf(stderr, "[net] %s\n", msg); }
+#endif
+static void net_service(s5l8900_t *m) {
+    for (unsigned i = 0; i < g_net_out_n; i++) {
+        pcap_frame(g_net_out[i].data, g_net_out[i].len);
+#ifdef IPHONE1_HAVE_SLIRP
+        if (g_net) net_slirp_input(g_net, g_net_out[i].data, g_net_out[i].len);
+#endif
+    }
+    g_net_out_n = 0;
+#ifdef IPHONE1_HAVE_SLIRP
+    if (!g_net) return;
+    net_slirp_poll(g_net, 0, NULL, 0);
+    for (unsigned i = 0; i < g_net_in_n; i++) {
+        pcap_frame(g_net_in[i].data, g_net_in[i].len);
+        s5l8900_net_rx(m, g_net_in[i].data, g_net_in[i].len);
+    }
+    g_net_in_n = 0;
+#else
+    (void)m;
+#endif
+}
+
 int main(int argc,char **argv) {
     const char *board_name=NULL,*kp=NULL,*dp=NULL,*rp=NULL,*cmd=NULL,*serial=NULL,*shot=NULL;
+    const char *net_mode=NULL, *net_pcap=NULL;
     uint64_t steps=200000000ull; unsigned ram_mb=0,vd=0,cpi=1; bool fb=true,debug=false,trace=false;
     uint32_t break_pc=0; uint64_t trace_from=UINT64_MAX; unsigned trace_last=256;
     uint32_t dump[8]; unsigned dump_n=0;
@@ -280,6 +336,8 @@ int main(int argc,char **argv) {
             save_path = argv[++i];
         }
         else if (!strcmp(argv[i],"--load")&&i+1<argc) load_path=argv[++i];
+        else if (!strcmp(argv[i],"--net")&&i+1<argc) net_mode=argv[++i];
+        else if (!strcmp(argv[i],"--net-pcap")&&i+1<argc) net_pcap=argv[++i];
         else if (!strcmp(argv[i],"--audio-wav")&&i+1<argc) audio_wav=argv[++i];
         else if (!strcmp(argv[i],"--at")&&i+2<argc) {
             input_event_t e = { .step = strtoull(argv[++i], NULL, 0) };
@@ -405,6 +463,26 @@ int main(int argc,char **argv) {
         s5l8900_free(&m); free(k.p); free(d.p); free(rd.p);
         return 2;
     }
+    if (net_pcap) {
+        g_net_pcap = fopen(net_pcap, "wb");
+        uint32_t hdr[6] = { 0xa1b2c3d4u, 0x00040002u, 0, 0, 65535, 1 };
+        if (g_net_pcap) fwrite(hdr, sizeof hdr, 1, g_net_pcap);
+    }
+    if (net_mode && strcmp(net_mode, "user")) {
+        fprintf(stderr, "--net: only 'user' is supported\n"); return 2;
+    }
+#ifdef IPHONE1_HAVE_SLIRP
+    if (net_mode) {
+        /* A local harness may reach the host's own services at 10.0.2.2. */
+        net_slirp_policy_t policy = { .public_only = false, .host_loopback = true,
+                                      .log = net_log };
+        g_net = net_slirp_new(net_to_guest, NULL, &policy);
+        if (!g_net) { fprintf(stderr, "--net user: slirp failed to start\n"); return 2; }
+    }
+#else
+    if (net_mode) { fprintf(stderr, "--net user: built without libslirp\n"); return 2; }
+#endif
+    s5l8900_set_net_tx(&m, net_from_guest, NULL);
     qsort(events, event_n, sizeof events[0], input_compare);
     tap_t t={serial?fopen(serial,"wb"):NULL,&m,true}; s5l8900_set_uart0_host(&m,tap,&t);
     arm_status_t st=ARM_OK; uint64_t total=m.cpu.cycles; uint32_t ring[32]={0}; unsigned ri=0, same=0;
@@ -480,7 +558,9 @@ int main(int argc,char **argv) {
          * EXEC/SWI logs report. */
         if (m.cpu.cycles>=trace_from) { slice=1; trace_record(&m); }
         else if (m.cpu.cycles+slice>trace_from) slice=(unsigned)(trace_from-m.cpu.cycles);
+        if (net_mode && slice > 100000u) slice = 100000u;   /* network latency */
         unsigned n=s5l8900_run(&m,slice,&st); total+=n; ring[ri++%32]=m.cpu.r[15];
+        net_service(&m);
         if (audio_wav && !wav) {
             wav = fopen(audio_wav, "wb");
             if (!wav) { fprintf(stderr, "cannot open %s\n", audio_wav); audio_wav = NULL; }
@@ -513,6 +593,13 @@ int main(int argc,char **argv) {
         if (same>=20 && slice>1) { reason="spin"; break; }
         if (!n) break;
     }
+    if (m.sdio.present)
+        printf("\nwifi: card=%u firmware=%s associated=%u commands=%llu unknown=%llu(last 0x%04x) tx=%llu rx=%llu dropped=%llu\n",
+               m.sdio.card_state, m.sdio.fw_stage == WLAN_FW_RUNNING ? "running" : "loading",
+               m.sdio.associated, (unsigned long long)m.sdio.commands,
+               (unsigned long long)m.sdio.unknown_commands, m.sdio.last_unknown_command,
+               (unsigned long long)m.sdio.tx_frames, (unsigned long long)m.sdio.rx_frames,
+               (unsigned long long)m.sdio.rx_dropped);
     printf("\nreason=%s instructions=%llu pc=0x%08x cpsr=0x%08x\n",reason,
            (unsigned long long)total,m.cpu.r[15],m.cpu.cpsr);
     for (unsigned i=0;i<16;i++) printf("r%u=0x%08x%s",i,m.cpu.r[i],i%4==3?"\n":" ");

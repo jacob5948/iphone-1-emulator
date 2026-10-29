@@ -94,6 +94,8 @@
         </label>
         <button id="reset" class="text-button" disabled>Reset</button>
         <button id="offline" class="text-button" disabled>Keep offline</button>
+        <span class="control-divider" aria-hidden="true"></span>
+        <button id="network" class="text-button" disabled>Wi‑Fi</button>
       </div>
       <details id="help" class="help-panel">
         <summary>Getting around <span aria-hidden="true">+</span></summary>
@@ -108,7 +110,8 @@
           <p>Save keeps a checkpoint in this browser. Export downloads a backup; Import restores one. Reset starts again from the supplied phone state.</p>
           <p>The current starting phone fixes the long pause when returning Home and has about 6 MB of free storage. Existing saved phones keep their old configuration. Export a backup before Reset to try the updated starting phone.</p>
           <p>Keep offline downloads the phone for later visits without a connection. Browser storage can be cleared, so export a backup of anything you want to keep.</p>
-          <p class="capability-note">This is genuine iPhone OS 1.0 running in an emulator. Hardware and app support are still being developed. Internet access, cellular service, and Camera are not yet available. Sound starts after your first tap or key press.</p>
+          <p>Wi‑Fi connects the phone to the internet through a relay server. Choose one with the Wi‑Fi button, then join “iPhone Virtual Wi‑Fi” in Settings → Wi‑Fi. Pages load over plain HTTP; most modern HTTPS sites are too new for the 2007 Safari.</p>
+          <p class="capability-note">This is genuine iPhone OS 1.0 running in an emulator. Hardware and app support are still being developed. Cellular service and Camera are not yet available. Sound starts after your first tap or key press.</p>
           <details class="developer-panel">
             <summary>Diagnostics</summary>
             <pre id="diagnostics" tabindex="0" aria-label="Emulator diagnostics">Waiting for the emulator…</pre>

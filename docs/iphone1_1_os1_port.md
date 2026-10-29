@@ -344,6 +344,39 @@ The close animation itself still scans out black for ~400M instructions (the
 3D blit path is not rendered), then the home screen reappears. Rendering that
 transition is cosmetic and left for later.
 
+### Wi-Fi: SDIO controller and Marvell 88W8686 (2026-10-29)
+
+`/arm-io/sdio` (physical page `0x38d00000`, VIC1 line 10) is modelled in
+`core/src/soc/sdio.c` and the card behind it in `core/src/soc/wlan8686.c`,
+attached on M68 only. Cold boot with the documented command line:
+
+```
+AppleS5L8900XSDIO: registers @ vaddr 0xf1909000, paddr 0x38d00000
+IOSDIOController: CCCR Revision 0x00 ... CIS Address: 0x1200
+AppleMRVL868x: SD8686_FIRMWARE is 122608 bytes.
+AppleMRVL868x: SD8686_HELPER is 2140 bytes.
+AppleMRVL868x: No Calibration Data Found!
+AppleMRVL868x: Ethernet address 02:00:00:00:01:01
+AppleMRVL868x: Loading Bootstrapper
+AppleMRVL868x: Loading Main Program
+AppleMRVL868x: Firmware loadded.
+```
+
+The helper and the 233 main-image bodies are received exactly as the genuine
+helper would request them (no Marvell code runs), then the card answers the
+firmware command protocol for one open access point. Adding
+`marvel-debug=0xffffffff` to the boot arguments makes the driver log every
+command, response and event; that, plus disassembly of the prelinked driver,
+gave the four non-obvious rules recorded in `plans/wifi.md` (silent
+DEEP_SLEEP, AWAKE event plus DNLD on wake, ASSOCIATE answered as `0x8012`,
+per-channel scans). With them the genuine Settings lists and joins "iPhone
+Virtual Wi-Fi", DHCP completes and Safari loads pages through
+`iphone1 --net user` (libslirp) or the browser's WebSocket relay.
+
+The boot path fills the device tree's zeroed `local-mac-address` and renames
+the all-zero `tx-calibration` property (the driver accepts its absence); see
+workaround 5 in `plans/README.md`.
+
 ## 8. Workarounds currently in force (each is a substitution for hardware we
 have not modeled yet, not a firmware patch)
 

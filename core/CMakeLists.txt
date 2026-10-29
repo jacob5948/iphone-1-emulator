@@ -32,6 +32,8 @@ add_library(emucore STATIC
     src/soc/nor.c
     src/soc/nand.c
     src/soc/storage.c
+    src/soc/sdio.c
+    src/soc/wlan8686.c
     src/soc/machine.c
     src/board/board.c
     src/board/m68.c
@@ -62,7 +64,8 @@ if(NOT IPHONE1_WEB)
               test_spi test_i2c test_gpioic test_buttons test_mtz2 test_mtz1 test_pl080
               test_mbx test_nand test_snapshot test_ksyms test_img3 test_aes
               test_board test_bringup_os1 test_wm8758 test_clock_carry
-              test_pcf50635_update test_pcf50635_pending_snapshot test_i2s)
+              test_pcf50635_update test_pcf50635_pending_snapshot test_i2s
+              test_sdio)
         add_executable(${t} tests/${t}.c)
         target_link_libraries(${t} emucore)
         add_test(NAME ${t} COMMAND ${t})

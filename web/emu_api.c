@@ -42,6 +42,22 @@ static bool button_active[S5L_BUTTON_COUNT];
 static bool button_release_pending[S5L_BUTTON_COUNT];
 static bool button_force_release[S5L_BUTTON_COUNT];
 static uint64_t button_down_ticks[S5L_BUTTON_COUNT];
+/* The virtual Wi-Fi network's host end. Frames the guest transmits wait here
+ * for the worker, which carries them to the relay; it hands received frames
+ * straight to emu_net_rx(). A full queue drops, as a congested link would. */
+#define EMU_NET_QUEUE 64u
+#define EMU_NET_FRAME 1536u
+static uint8_t net_queue[EMU_NET_QUEUE][EMU_NET_FRAME];
+static uint16_t net_queue_len[EMU_NET_QUEUE];
+static unsigned net_queue_head, net_queue_count;
+static void net_tx(void *ctx, const uint8_t *frame, size_t len) {
+    (void)ctx;
+    if (len > EMU_NET_FRAME || net_queue_count >= EMU_NET_QUEUE) return;
+    unsigned slot = (net_queue_head + net_queue_count) % EMU_NET_QUEUE;
+    memcpy(net_queue[slot], frame, len);
+    net_queue_len[slot] = (uint16_t)len;
+    net_queue_count++;
+}
 static uint8_t *saved_snapshot;
 static size_t saved_snapshot_size;
 static snapshot_capture_t *snapshot_capture;
@@ -300,6 +316,8 @@ int emu_init(const uint8_t *kernel, size_t kernel_size,
         return -4;
     }
     browser_clock_compatible = browser_guest_clock_compatible();
+    net_queue_head = net_queue_count = 0u;
+    s5l8900_set_net_tx(&machine, net_tx, NULL);
     if (!s5l8900_set_uart0_host(&machine, serial_tx, NULL)) {
         set_error("UART0 host tap setup failed");
         release_machine();
@@ -326,6 +344,7 @@ int emu_load_snapshot(const uint8_t *buf, size_t len) {
     }
     browser_clock_compatible = browser_guest_clock_compatible();
     browser_wait_until_ms = 0;
+    net_queue_head = net_queue_count = 0u;
     reset_host_inputs();
     last_status = ARM_OK;
     /* v39 snapshots omit Z1's uptime accumulator. Re-anchor its reports to
@@ -626,4 +645,45 @@ EMSCRIPTEN_KEEPALIVE
 int emu_button_state(unsigned which) {
     if (!machine_ready || which >= S5L_BUTTON_COUNT) return -1;
     return s5l_buttons_held(&machine.buttons, which) ? 1 : 0;
+}
+
+/* Copy the next frame the guest sent onto the virtual network into `out`.
+ * Returns its length, or 0 when none is waiting (or `max` is too small). */
+EMSCRIPTEN_KEEPALIVE
+unsigned emu_net_tx_read(uint8_t *out, unsigned max) {
+    if (!net_queue_count || !out) return 0u;
+    unsigned len = net_queue_len[net_queue_head];
+    if (len > max) return 0u;
+    memcpy(out, net_queue[net_queue_head], len);
+    net_queue_head = (net_queue_head + 1u) % EMU_NET_QUEUE;
+    net_queue_count--;
+    return len;
+}
+
+/* One Ethernet II frame from the relay. 1 when the guest took it. */
+EMSCRIPTEN_KEEPALIVE
+int emu_net_rx(const uint8_t *frame, unsigned len) {
+    if (!machine_ready || !frame) return 0;
+    /* A sleeping guest must wake for the card interrupt now, not when the
+     * declined WFI deadline it last asked for comes round. */
+    browser_wait_until_ms = 0;
+    return s5l8900_net_rx(&machine, frame, len) ? 1 : 0;
+}
+
+/* bit0 card present, bit1 firmware running, bit2 associated, bit3 AP on. */
+EMSCRIPTEN_KEEPALIVE
+int emu_wifi_state(void) {
+    if (!machine_ready) return 0;
+    const s5l_sdio_t *d = &machine.sdio;
+    return (d->present ? 1 : 0) | (d->fw_stage == WLAN_FW_RUNNING ? 2 : 0) |
+           (d->associated ? 4 : 0) | (d->ap_enabled ? 8 : 0);
+}
+
+/* Take the virtual access point on or off the air (the relay went away, or
+ * the person turned the network off). */
+EMSCRIPTEN_KEEPALIVE
+int emu_wifi_set_ap(int enabled) {
+    if (!machine_ready) return -1;
+    s5l8900_wifi_set_ap(&machine, enabled != 0);
+    return 0;
 }

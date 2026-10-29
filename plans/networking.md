@@ -2,6 +2,8 @@
 
 > Historical recordings and publishing artifacts have been removed from Git history. The summaries below describe the original runs; remaining test reports and screenshots are retained. Historical hash receipts may predate this archival cleanup.
 
+> **2026-10-29: superseded by a working production device.** The controller and card now live in `core/src/soc/sdio.c` and `wlan8686.c`, the phone joins a virtual access point and reaches the internet. [Wi-Fi](wifi.md) records the design and the driver behaviour found after milestone 077. The isolated evidence below is kept as history.
+
 Status: 2026-09-05. This investigation refines [the Wi-Fi proposal](wifi.md). An isolated minimal SDIO controller/card now passes the first card-register gate below; no production network device or transport is implemented. The genuine guest still has **No Wi-Fi**, and Safari cannot make an external HTTP request.
 
 ## What exists and what does not

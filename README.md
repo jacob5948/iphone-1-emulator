@@ -29,6 +29,9 @@ Many original apps still cannot complete their main tasks.
 - **Saved data:** the browser supports manual save, autosave, pause, backup export, and backup import.
   Tests cover selected recovery and saved-phone upgrade cases.
 - **Offline visits:** Keep offline stores the page, emulator, and verified firmware for disconnected reloads.
+- **Wi-Fi:** the original Marvell Wi-Fi driver runs on an emulated card.
+  Settings → Wi-Fi lists and joins "iPhone Virtual Wi-Fi", and Safari loads plain-HTTP pages.
+  The browser reaches the internet through a relay server; see [the network tools](tools/net/README.md).
 
 See the [app audit](plans/app-coverage.md) for tested workflows and their limits.
 The [engineering log](plans/execution.md) records later changes.
@@ -53,8 +56,9 @@ See the [service tools](tools/legacy_services/README.md) and
 
 1. **Speed:** reduce app launch delays and qualify typing, scrolling, and animation.
    Settings still exceeds the two-second warm-launch target in the recorded cloud baseline.
-2. **Networking:** complete a usable guest network connection and compatible app services.
-   General internet access, Maps, Mail, and modern service compatibility remain unfinished.
+2. **Networking:** Wi-Fi reaches the internet through a relay or the native `--net user` option.
+   WPA networks, modern HTTPS, Maps, Mail, and other retired app services remain unfinished.
+   Phones saved before Wi-Fi support need Reset to gain the Wi-Fi card.
 3. **Audio and video:** original system sounds (such as the lock click) now play through the modeled I2S clock, FIFO, and DMA.
    iPod music and YouTube playback have not been verified yet, and sound stutters when the emulator runs slower than real time.
    Genuine video playback remains unfinished.
@@ -118,6 +122,16 @@ The build script finds Emscripten on `PATH` or in `.context/emsdk`.
 It writes generated files to `web/dist/` and `web/jit/` and regenerates the offline package (`web/service-worker.js`).
 These generated files are committed because Vercel serves `web/` as-is.
 Rebuild after you change browser files.
+
+To give the local phone internet access, also run the Wi-Fi relay
+(it needs `libslirp-dev` when you build):
+
+```sh
+build/tools/netrelay --port 8090
+```
+
+A page on `localhost` connects to it automatically.
+See [the network tools](tools/net/README.md) for public relays.
 
 The default [manifest](web/manifest.json) downloads firmware and a saved home state
 from `https://iphone.files.garden/`.
