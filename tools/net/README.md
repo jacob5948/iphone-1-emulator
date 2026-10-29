@@ -52,7 +52,8 @@ A page served from `localhost` uses `ws://localhost:8090/` automatically, so
 relay with the **Wi-Fi** button under the phone, or open the page with
 `?relay=wss://relay.example.com/`. The choice is remembered in the browser;
 `?relay=off` forgets it. A site can also set a default with
-`<meta name="iphone-relay" content="wss://relay.example.com/">`.
+`<meta name="iphone-relay" content="wss://relay.example.com/">`; the GitHub
+Pages workflow adds it from the repository variable `RELAY_URL`.
 
 Each connection gets its own forked process and its own NAT, so phones never
 share connections, and a crash affects one phone.

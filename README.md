@@ -142,6 +142,21 @@ to record its new digest and size.
 To serve the files from another host, list full URLs in the manifest
 and add that host to `FIRMWARE_ORIGINS` in `web/assets.js`.
 
+## Publish on GitHub Pages
+
+`.github/workflows/pages.yml` publishes `web/` on every push to `main`.
+Turn it on once in the repository: Settings → Pages → Source: **GitHub Actions**.
+The workflow uses the committed WebAssembly build and firmware, so it needs no compiler.
+`tools/pages-site.py` points the page's sharing links at the Pages address
+and refreshes the offline bundle to match.
+
+To give visitors Wi-Fi by default, run a relay with TLS (see [the network tools](tools/net/README.md))
+and set the repository variable `RELAY_URL` to its `wss://` address
+(Settings → Secrets and variables → Actions → Variables), then run the workflow again.
+
+GitHub Pages has a soft bandwidth limit of 100 GB per month.
+Each new visitor downloads about 106 MB of firmware; returning visitors use their browser cache.
+
 ## Controls and saved data
 
 Slide to unlock when the phone opens.
