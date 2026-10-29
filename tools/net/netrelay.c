@@ -21,6 +21,7 @@
  * machine's own services at 10.0.2.2, e.g. a test page on localhost.
  */
 #define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE   /* macOS: keep the BSD types <netinet/tcp.h> uses */
 #include "net_slirp.h"
 
 #include <arpa/inet.h>
