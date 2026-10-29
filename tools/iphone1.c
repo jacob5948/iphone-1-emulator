@@ -205,13 +205,15 @@ static void usage(void) {
          "  --cpi N           cycles per retired instruction, 1..16, default 1\n"
          "  --net user        connect the virtual Wi-Fi network through libslirp\n"
          "  --net-pcap FILE   record the virtual network's frames\n"
+         "  --at STEP wifi-ap on|off   put the virtual access point on or off the air\n"
          "  --dump-ram FILE  write the guest RAM image when the run ends");
 }
 
 typedef enum {
     INPUT_TOUCH,
     INPUT_LIFT,
-    INPUT_BUTTON
+    INPUT_BUTTON,
+    INPUT_WIFI_AP
 } input_kind_t;
 
 typedef struct {
@@ -273,12 +275,16 @@ static void net_from_guest(void *ctx, const uint8_t *f, size_t n) {
 }
 #ifdef IPHONE1_HAVE_SLIRP
 static net_slirp_t *g_net;
-static net_frame_t g_net_in[NET_QUEUE]; static unsigned g_net_in_n;
+/* Frames for the guest wait here until the card has room: it holds only a
+ * few, and one handed to a full card is dropped, stalling TCP. */
+#define NET_BACKLOG 1024u
+static net_frame_t g_net_in[NET_BACKLOG]; static unsigned g_net_in_head, g_net_in_n;
 static void net_to_guest(void *ctx, const uint8_t *f, size_t n) {
     (void)ctx;
-    if (n > sizeof g_net_in[0].data || g_net_in_n >= NET_QUEUE) return;
-    g_net_in[g_net_in_n].len = (uint16_t)n;
-    memcpy(g_net_in[g_net_in_n++].data, f, n);
+    if (n > sizeof g_net_in[0].data || g_net_in_n >= NET_BACKLOG) return;
+    net_frame_t *slot = &g_net_in[(g_net_in_head + g_net_in_n++) % NET_BACKLOG];
+    slot->len = (uint16_t)n;
+    memcpy(slot->data, f, n);
 }
 static void net_log(void *ctx, const char *msg) { (void)ctx; fprintf(stderr, "[net] %s\n", msg); }
 #endif
@@ -293,11 +299,15 @@ static void net_service(s5l8900_t *m) {
 #ifdef IPHONE1_HAVE_SLIRP
     if (!g_net) return;
     net_slirp_poll(g_net, 0, NULL, 0);
-    for (unsigned i = 0; i < g_net_in_n; i++) {
-        pcap_frame(g_net_in[i].data, g_net_in[i].len);
-        s5l8900_net_rx(m, g_net_in[i].data, g_net_in[i].len);
+    while (g_net_in_n && s5l8900_net_rx_ready(m)) {
+        net_frame_t *f = &g_net_in[g_net_in_head];
+        pcap_frame(f->data, f->len);
+        s5l8900_net_rx(m, f->data, f->len);
+        g_net_in_head = (g_net_in_head + 1u) % NET_BACKLOG;
+        g_net_in_n--;
     }
-    g_net_in_n = 0;
+    /* Nothing is associated to receive them: drop, as the radio would. */
+    if (!m->sdio.associated) g_net_in_head = g_net_in_n = 0;
 #else
     (void)m;
 #endif
@@ -375,6 +385,15 @@ int main(int argc,char **argv) {
                 }
                 e.kind = INPUT_BUTTON;
                 e.pressed = !strcmp(state, "down");
+                events[event_n++] = e;
+            } else if (!strcmp(action, "wifi-ap") && i + 1 < argc) {
+                const char *state = argv[++i];
+                if (strcmp(state, "on") && strcmp(state, "off")) {
+                    fprintf(stderr, "wifi-ap takes on or off\n");
+                    return 2;
+                }
+                e.kind = INPUT_WIFI_AP;
+                e.pressed = !strcmp(state, "on");
                 events[event_n++] = e;
             } else if (!strcmp(action, "press") && i + 1 < argc) {
                 const char *name = argv[++i];
@@ -485,6 +504,7 @@ int main(int argc,char **argv) {
     s5l8900_set_net_tx(&m, net_from_guest, NULL);
     qsort(events, event_n, sizeof events[0], input_compare);
     tap_t t={serial?fopen(serial,"wb"):NULL,&m,true}; s5l8900_set_uart0_host(&m,tap,&t);
+    const uint64_t start_ticks=m.timer.ticks, start_cycles=m.cpu.cycles;
     arm_status_t st=ARM_OK; uint64_t total=m.cpu.cycles; uint32_t ring[32]={0}; unsigned ri=0, same=0;
     unsigned next_event = 0; bool saved = false;
     bool tap_pending = false, press_pending = false;
@@ -537,6 +557,9 @@ int main(int argc,char **argv) {
                     tap_pending = true;
                     tap_down_ticks = m.timer.ticks;
                 }
+            } else if (e->kind == INPUT_WIFI_AP) {
+                s5l8900_wifi_set_ap(&m, e->pressed);
+                fprintf(stderr, "virtual access point %s\n", e->pressed ? "on" : "off");
             } else {
                 bool ok = s5l8900_set_button(&m, e->button, e->pressed);
                 fprintf(stderr, "button %u %s -> %s\n", e->button,
@@ -593,6 +616,10 @@ int main(int argc,char **argv) {
         if (same>=20 && slice>1) { reason="spin"; break; }
         if (!n) break;
     }
+    printf("\nguest-time: ticks %llu -> %llu (%.2f s at 6 MHz) over %llu instructions\n",
+           (unsigned long long)start_ticks, (unsigned long long)m.timer.ticks,
+           (double)(m.timer.ticks - start_ticks) / 6e6,
+           (unsigned long long)(m.cpu.cycles - start_cycles));
     if (m.sdio.present)
         printf("\nwifi: card=%u firmware=%s associated=%u commands=%llu unknown=%llu(last 0x%04x) tx=%llu rx=%llu dropped=%llu\n",
                m.sdio.card_state, m.sdio.fw_stage == WLAN_FW_RUNNING ? "running" : "loading",

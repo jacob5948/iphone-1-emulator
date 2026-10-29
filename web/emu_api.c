@@ -670,6 +670,12 @@ int emu_net_rx(const uint8_t *frame, unsigned len) {
     return s5l8900_net_rx(&machine, frame, len) ? 1 : 0;
 }
 
+/* 1 when emu_net_rx() would accept a frame now; hold frames until then. */
+EMSCRIPTEN_KEEPALIVE
+int emu_net_rx_ready(void) {
+    return machine_ready && s5l8900_net_rx_ready(&machine) ? 1 : 0;
+}
+
 /* bit0 card present, bit1 firmware running, bit2 associated, bit3 AP on. */
 EMSCRIPTEN_KEEPALIVE
 int emu_wifi_state(void) {

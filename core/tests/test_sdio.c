@@ -222,6 +222,7 @@ static void test_frames_cross_in_both_directions(void) {
     memset(in, 0, sizeof in);
     memcpy(in, S5L8900_M68_WIFI_MAC, 6);
     in[6] = 0x52; in[12] = 0x08; in[13] = 0x06; in[14] = 0x00; in[15] = 0x01;
+    CHECK(s5l8900_net_rx_ready(&m), "an associated card with room is ready");
     CHECK(s5l8900_net_rx(&m, in, sizeof in), "frame accepted while associated");
     settle();
     CHECK(rd(0x38) & 2u, "card interrupt for the received frame");
@@ -237,6 +238,29 @@ static void test_frames_cross_in_both_directions(void) {
     CHECK(!memcmp(f, S5L8900_M68_WIFI_MAC, 6) && f[12] == 0 && f[13] == 64 - 14 + 8 &&
           f[14] == 0xaa && f[15] == 0xaa && f[16] == 0x03 && f[20] == 0x08 && f[21] == 0x06,
           "802.3 length and SNAP header carry the ARP ethertype");
+}
+
+static void test_a_full_card_is_not_ready(void) {
+    uint8_t in[64];
+    memset(in, 0, sizeof in);
+    in[12] = 0x08;
+    unsigned taken = 0;
+    while (s5l8900_net_rx_ready(&m) && taken < 100u) {
+        CHECK(s5l8900_net_rx(&m, in, sizeof in), "accepted while ready");
+        taken++;
+    }
+    CHECK(taken == WLAN_UPLOAD_SLOTS, "ready for exactly the free slots (%u)", taken);
+    uint64_t dropped = m.sdio.rx_dropped;
+    CHECK(!s5l8900_net_rx(&m, in, sizeof in) && m.sdio.rx_dropped == dropped + 1u,
+          "a frame forced on a full card is dropped and counted");
+    /* Drain what the guest would read, so later tests start empty. */
+    while (m.sdio.up_count) {
+        settle();
+        wr(0x38, rd(0x38));
+        cmd52(true, 1, 5, 0);
+        cmd53(false, 1, 320);
+    }
+    CHECK(s5l8900_net_rx_ready(&m), "ready again once the guest has read them");
 }
 
 static void test_deep_sleep_and_wake(void) {
@@ -302,6 +326,7 @@ int main(void) {
     test_enumeration_and_download();
     test_commands_scan_and_join();
     test_frames_cross_in_both_directions();
+    test_a_full_card_is_not_ready();
     test_deep_sleep_and_wake();
     test_reset_pin_clears_the_card();
     test_snapshots();

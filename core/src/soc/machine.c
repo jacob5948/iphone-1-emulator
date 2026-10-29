@@ -981,6 +981,10 @@ bool s5l8900_net_rx(s5l8900_t *m, const uint8_t *frame, size_t len) {
     return ok;
 }
 
+bool s5l8900_net_rx_ready(const s5l8900_t *m) {
+    return m && s5l_wlan_rx_ready(&m->sdio);
+}
+
 void s5l8900_wifi_set_ap(s5l8900_t *m, bool enabled) {
     if (!m) return;
     s5l_wlan_set_ap(&m->sdio, enabled);
