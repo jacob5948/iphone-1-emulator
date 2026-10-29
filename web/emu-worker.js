@@ -40,10 +40,15 @@ function schedule() {
 }
 // The virtual Wi-Fi network. The guest's Ethernet frames cross a WebSocket to
 // a relay (tools/net/netrelay.c), one frame per binary message, and the relay
-// NATs them onto the internet. Without a relay the access point stays off the
-// air, so Settings shows no network rather than one that cannot connect.
-const NET_FRAME = 1536;
-const net = {url:null, socket:null, pointer:0, retry:0, timer:0, state:'off'};
+// NATs them onto the internet. With no relay chosen the access point is off
+// the air, so Settings shows no network rather than one that cannot connect.
+//
+// With a relay chosen the access point STAYS on the air, even while the
+// socket connects or reconnects: taking it away makes a joined phone lose its
+// link, sweep every channel looking for it, and not rejoin when it returns.
+// Frames sent meanwhile are lost, which TCP recovers from.
+const NET_FRAME = 1536, NET_BACKLOG = 2048;
+const net = {url:null, socket:null, pointer:0, retry:0, timer:0, state:'off', inbox:[]};
 function netStatus(state, detail = '') {
   net.state = state;
   send('net', {state, url:net.url, detail});
@@ -52,15 +57,28 @@ function netClose() {
   clearTimeout(net.timer); net.timer = 0;
   const socket = net.socket;
   net.socket = null;
+  net.inbox.length = 0;
   if (socket) { socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null; socket.close(); }
-  if (api) api.wifiAp(0);
 }
 function netConnect(url) {
   netClose();
   net.url = url || null;
   net.retry = 0;
+  api?.wifiAp(net.url ? 1 : 0);
   if (!net.url) { netStatus('off'); return; }
   netOpen();
+}
+// Hand queued frames to the card while it has room. It holds only a few, and
+// a frame handed to a full card is dropped, which stalls TCP for a timeout.
+function netPump() {
+  let delivered = false;
+  while (net.inbox.length && api.netReady()) {
+    const frame = net.inbox.shift();
+    module.HEAPU8.set(frame, net.pointer);
+    api.netRx(net.pointer, frame.byteLength);
+    delivered = true;
+  }
+  return delivered;
 }
 function netOpen() {
   let socket;
@@ -71,20 +89,19 @@ function netOpen() {
   netStatus('connecting');
   socket.onopen = () => {
     net.retry = 0;
-    api?.wifiAp(1);
     netStatus('connected');
   };
   socket.onmessage = ({data}) => {
     if (!api || !(data instanceof ArrayBuffer) || data.byteLength > NET_FRAME) return;
-    module.HEAPU8.set(new Uint8Array(data), net.pointer);
-    api.netRx(net.pointer, data.byteLength);
-    // A frame for a sleeping guest ends its idle wait now.
-    if (!paused) { invalidateSchedule(); schedule(); }
+    if (net.inbox.length >= NET_BACKLOG) return;   // a runaway peer, not TCP
+    net.inbox.push(new Uint8Array(data));
+    // A frame for a sleeping guest ends its idle wait now; a running guest
+    // picks it up at the end of its current slice.
+    if (netPump() && !paused && pacingTimer) { invalidateSchedule(); schedule(); }
   };
   socket.onclose = () => {
     if (net.socket !== socket) return;
     net.socket = null;
-    api?.wifiAp(0);
     const delay = Math.min(30000, 1000 * 2 ** net.retry++);
     netStatus('disconnected', `Retrying in ${Math.round(delay / 1000)} s`);
     net.timer = setTimeout(() => { net.timer = 0; if (net.url && !net.socket) netOpen(); }, delay);
@@ -92,6 +109,7 @@ function netOpen() {
 }
 function netFlush() {
   if (!net.pointer) return;
+  netPump();
   for (;;) {
     const n = api.netTx(net.pointer, NET_FRAME);
     if (!n) return;
@@ -142,6 +160,7 @@ function tick() {
     do {
       const ran = api.run(50000);
       steps += ran;
+      if (net.inbox.length) netPump();
       if (!ran) throw new Error(`Guest stopped (status ${api.status()}). Export a save or restart.`);
       if (api.clockDelay() > 0) break;
     } while (performance.now() - began < 6);
@@ -271,6 +290,7 @@ async function start(message) {
     ['captureData','emu_snapshot_data',[]],
     ['size','emu_snapshot_size',[]], ['freeSave','emu_free_snapshot',[]],
     ['netTx','emu_net_tx_read',['number','number']], ['netRx','emu_net_rx',['number','number']],
+    ['netReady','emu_net_rx_ready',[]],
     ['wifiState','emu_wifi_state',[]], ['wifiAp','emu_wifi_set_ap',['number']]
   ].map(([key,name,args]) => [key, module.cwrap(name, 'number', args)]));
   framePointer = module._malloc(320 * 480 * 4);
@@ -281,8 +301,8 @@ async function start(message) {
   if (![framePointer,widthPointer,heightPointer,serialPointer,contactsPointer,audioPointer,net.pointer].every(Boolean))
     throw new Error('Not enough memory for display buffers');
   check(api.release());
-  // Until a relay answers, the virtual access point is off the air.
-  api.wifiAp(0);
+  // The access point is on the air exactly when a relay is chosen.
+  api.wifiAp(message.relay ? 1 : 0);
   if (snapshot) await openLocked();
   drainAudio(false); // The wake sequence's own clicks happen before the page is shown.
   present(true);
@@ -319,7 +339,8 @@ onmessage = async ({data:message}) => {
         check(api.hostClock(paused ? 0 : 1));
         schedule();
         check(api.release()); present(true);
-        // The restored guest's connections are gone; start the relay afresh.
+        // The restored guest's connections are gone; start the relay afresh
+        // (with the access point still on the air, so a joined phone stays).
         netConnect(net.url);
         lastTicks = api.ticks(); lastStats = performance.now(); steps = uniqueFrames = 0;
         send('reply', {id:message.id, silent:Boolean(api.buttonState(4))});

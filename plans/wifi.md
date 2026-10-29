@@ -84,6 +84,28 @@ SUBSCRIBE_EVENT (0x0075), HOST_SLEEP_CFG (0x0043), ENABLE_RSN (0x002f),
 SET_WEP (0x0013) and PS_MODE (0x0021). They are counted as `unknown_commands`
 in the harness's `wifi:` summary line.
 
+## Host-side behaviour that matters (2026-10-29, after first use)
+
+Reported as freezes when unlocking and loading pages; both were reproduced
+natively and fixed on the host side, with no change to the card or the
+snapshot format.
+
+- **Receive backpressure.** The card queues 16 received frames. A page
+  arrives in bursts larger than that; frames handed to a full card were
+  dropped, and each loss cost TCP a retransmission timeout (a 338 KB page:
+  3 drops, 4 retransmissions). Hosts now hold frames until
+  `s5l8900_net_rx_ready()` (`emu_net_rx_ready()` in the browser) says the card
+  has room: the same page then arrives with 0 drops and 0 retransmissions.
+- **Keep the access point on the air.** Taking it away from a joined phone
+  makes the driver sweep all channels for it (36 scans in a burst) and then
+  stay disconnected when it returns. The browser used to do exactly that at
+  every start-up until the relay connected, i.e. during unlock. The access
+  point is now on whenever a relay is chosen, including while the socket
+  connects or reconnects; it is off only when no relay is chosen.
+- **Settings scans while open.** The Settings Wi-Fi page rescans every few
+  seconds of guest time (11 channels each), as real iPhones do; leaving the
+  page stops it. Power-save enter/exit commands accompany each scan.
+
 ## Boot timing
 
 With the browser's boot arguments (`debug=0x8 serial=3 rd=md0 -v`) the whole

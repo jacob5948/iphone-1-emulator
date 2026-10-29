@@ -209,6 +209,9 @@ void     s5l_wlan_host_config(s5l_sdio_t *s, uint8_t value);
 void     s5l_wlan_upload_consumed(s5l_sdio_t *s);
 bool     s5l_wlan_card_irq(const s5l_sdio_t *s);
 
+/* Can the card take a received frame now (associated, upload queue not
+ * full)? Hosts hold bursts back until it can, instead of dropping them. */
+bool     s5l_wlan_rx_ready(const s5l_sdio_t *s);
 /* Host -> guest: one Ethernet II frame from the virtual network. Returns
  * false when the link is down or the upload queue is full (counted). */
 bool     s5l_wlan_rx_frame(s5l_sdio_t *s, const uint8_t *frame, size_t len);

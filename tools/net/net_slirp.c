@@ -2,11 +2,15 @@
  * libslirp glue for the virtual Wi-Fi network. See net_slirp.h.
  */
 #define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE   /* macOS: keep the BSD types <netinet/tcp.h> uses */
 #include "net_slirp.h"
 
 #include <arpa/inet.h>
 #include <poll.h>
-#include <slirp/libslirp.h>
+/* pkg-config adds the slirp/ header folder itself (QEMU includes it the same
+ * way); <slirp/...> only resolves where that folder's parent is a default
+ * search path, which Homebrew's /opt/homebrew/include is not. */
+#include <libslirp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

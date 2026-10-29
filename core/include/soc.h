@@ -4547,6 +4547,10 @@ bool s5l8900_set_uart0_host(s5l8900_t *m, s5l_uart4_host_tx_fn tx,
  */
 void s5l8900_set_net_tx(s5l8900_t *m, s5l_net_tx_fn tx, void *ctx);
 bool s5l8900_net_rx(s5l8900_t *m, const uint8_t *frame, size_t len);
+/* True when net_rx would accept a frame now. The card holds only a few
+ * received frames; a host should keep a burst queued until this is true
+ * rather than hand frames in to be dropped (TCP then stalls on the loss). */
+bool s5l8900_net_rx_ready(const s5l8900_t *m);
 void s5l8900_wifi_set_ap(s5l8900_t *m, bool enabled);
 bool s5l8900_wifi_associated(const s5l8900_t *m);
 

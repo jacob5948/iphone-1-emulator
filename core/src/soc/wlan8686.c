@@ -423,6 +423,11 @@ static void fw_tx(s5l_sdio_t *s, const uint8_t *p, size_t len,
     if (env && env->net_tx) env->net_tx(env->net_ctx, eth, n);
 }
 
+bool s5l_wlan_rx_ready(const s5l_sdio_t *s) {
+    return s->present && s->fw_stage == WLAN_FW_RUNNING && s->associated &&
+           s->up_count < WLAN_UPLOAD_SLOTS;
+}
+
 bool s5l_wlan_rx_frame(s5l_sdio_t *s, const uint8_t *f, size_t len) {
     uint8_t b[RXPD_LEN + 1600];
     if (!s->present || s->fw_stage != WLAN_FW_RUNNING || !s->associated ||
