@@ -117,9 +117,9 @@ as the board attached it, never enumerated.
 Phones saved before this change booted without the card, and the driver gave
 up on it then, so **they have no Wi-Fi until Reset** (export first). The new
 default phone, `web/firmware/home_1A543a_wifi.snap.gz.part*`, was cold-booted
-with the card present; `web/manifest.json` points at those names on the
-firmware host. They must be uploaded to `https://iphone.files.garden/` before
-the site is deployed.
+with the card present. `web/manifest.json` now loads it, and all other
+firmware, from the site itself (`firmware/...`) rather than from
+`iphone.files.garden`, which this fork cannot upload to.
 
 ## Verification
 

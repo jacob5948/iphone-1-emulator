@@ -134,10 +134,13 @@ A page on `localhost` connects to it automatically.
 See [the network tools](tools/net/README.md) for public relays.
 
 The default [manifest](web/manifest.json) downloads firmware and a saved home state
-from `https://iphone.files.garden/`.
+from the site itself, out of `web/firmware/`.
 The browser checks each download against its recorded SHA-256 digest.
 It then restores the saved state instead of performing a full cold boot.
-Source copies of these firmware objects remain in `web/firmware/`.
+After you replace a firmware file, run `python3 tools/firmware/update_manifest.py`
+to record its new digest and size.
+To serve the files from another host, list full URLs in the manifest
+and add that host to `FIRMWARE_ORIGINS` in `web/assets.js`.
 
 ## Controls and saved data
 
