@@ -1555,10 +1555,13 @@ static void test_wfi_wake_source_order_does_not_matter(void) {
      * is the only source in the table whose producer is OUTSIDE the machine.
      * The two DMA controllers joined with the PL080 model; both answer NEVER
      * today for the reason the SPI pair does, and both are declared anyway
-     * because this table is the machine's definition of what can interrupt it. */
-    CHECK(real != NULL && nreal == 8u + S5L_GPIOIC_GROUPS,
+     * because this table is the machine's definition of what can interrupt it.
+     * The SDIO controller joined with the Wi-Fi card: its data completions and
+     * card interrupt causes land a fixed number of ticks after the store that
+     * starts them, a distance it answers with. */
+    CHECK(real != NULL && nreal == 9u + S5L_GPIOIC_GROUPS,
           "the machine declares %u wake sources, expected %u",
-          nreal, 8u + S5L_GPIOIC_GROUPS);
+          nreal, 9u + S5L_GPIOIC_GROUPS);
     for (unsigned i = 0; i < nreal; i++)
         CHECK(real[i].name && real[i].next_edge &&
               real[i].line < 32u * S5L8900_VIC_COUNT,

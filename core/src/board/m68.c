@@ -66,6 +66,12 @@ static bool m68_attach(s5l8900_t *m) {
                         s5l_mtz1_select_pin)) m->stub_declare_failures++;
     if (!s5l_gpio_watch(&m->gpio, MTZ1_PIN_POWER, &m->mtz1,
                         s5l_mtz1_power_pin)) m->stub_declare_failures++;
+
+    /* The 88W8686 on /arm-io/sdio. Its MAC is the one the boot path writes
+     * into the device tree's zeroed local-mac-address (bringup_os1.c). */
+    s5l_sdio_reset(&m->sdio, true, S5L8900_M68_WIFI_MAC);
+    if (!s5l_gpio_watch(&m->gpio, S5L8900_M68_WIFI_RESET_PIN, &m->sdio,
+                        s5l_sdio_reset_pin)) m->stub_declare_failures++;
     return true;
 }
 

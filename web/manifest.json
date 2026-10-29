@@ -1,28 +1,28 @@
 {
-  "kernel": "https://iphone.files.garden/kernel_1A543a.macho",
-  "devicetree": "https://iphone.files.garden/devicetree_m68ap.bin",
+  "kernel": "firmware/kernel_1A543a.macho",
+  "devicetree": "firmware/devicetree_m68ap.bin",
   "rootfs": [
-    "https://iphone.files.garden/rootfs_1A543a_act.img.gz.part0",
-    "https://iphone.files.garden/rootfs_1A543a_act.img.gz.part1"
+    "firmware/rootfs_1A543a_act.img.gz.part0",
+    "firmware/rootfs_1A543a_act.img.gz.part1"
   ],
   "snapshot": [
-    "https://iphone.files.garden/home_1A543a.snap.gz.part0",
-    "https://iphone.files.garden/home_1A543a.snap.gz.part1"
+    "firmware/home_1A543a_wifi.snap.gz.part0",
+    "firmware/home_1A543a_wifi.snap.gz.part1"
   ],
   "assetSha256": {
-    "https://iphone.files.garden/kernel_1A543a.macho": "42e9f3c18d4a4d5c956acdcded0c3f8f247fe3e7fc96d14cfa3aedcd77c292c9",
-    "https://iphone.files.garden/devicetree_m68ap.bin": "94cbef8175df0d84afbbd3885f7fe7267b9e6f4ba3b80f8d83328800cff93e10",
-    "https://iphone.files.garden/rootfs_1A543a_act.img.gz.part0": "59a755eec434d82b5cdec90a4eb332c142c09a2dd71d43918f66c86ea9d49cfd",
-    "https://iphone.files.garden/rootfs_1A543a_act.img.gz.part1": "e4dcd96fd78453c6982f738a8afce459a1171de62ad4143ea9ee0c07cfca8c2f",
-    "https://iphone.files.garden/home_1A543a.snap.gz.part0": "4909d8a11bd3c9075cd94e68245423f107cd9ba104b000af9e48694ea2157a2e",
-    "https://iphone.files.garden/home_1A543a.snap.gz.part1": "177a9a0c521a1f4f926a9aa683c49189f9cd327e1de869060fa7501bed9095b6"
+    "firmware/kernel_1A543a.macho": "42e9f3c18d4a4d5c956acdcded0c3f8f247fe3e7fc96d14cfa3aedcd77c292c9",
+    "firmware/devicetree_m68ap.bin": "94cbef8175df0d84afbbd3885f7fe7267b9e6f4ba3b80f8d83328800cff93e10",
+    "firmware/rootfs_1A543a_act.img.gz.part0": "59a755eec434d82b5cdec90a4eb332c142c09a2dd71d43918f66c86ea9d49cfd",
+    "firmware/rootfs_1A543a_act.img.gz.part1": "e4dcd96fd78453c6982f738a8afce459a1171de62ad4143ea9ee0c07cfca8c2f",
+    "firmware/home_1A543a_wifi.snap.gz.part0": "739955bc0ac955d65d7cb20b822ee43f25302d6501b5b390bc502f694d18b9a2",
+    "firmware/home_1A543a_wifi.snap.gz.part1": "98ebc616b792a5e415dd5792f192a18061ebfceb0ef4052fecac516593c6e563"
   },
   "assetBytes": {
-    "https://iphone.files.garden/kernel_1A543a.macho": 5888896,
-    "https://iphone.files.garden/devicetree_m68ap.bin": 36864,
-    "https://iphone.files.garden/rootfs_1A543a_act.img.gz.part0": 40606822,
-    "https://iphone.files.garden/rootfs_1A543a_act.img.gz.part1": 40606821,
-    "https://iphone.files.garden/home_1A543a.snap.gz.part0": 50201156,
-    "https://iphone.files.garden/home_1A543a.snap.gz.part1": 50201155
+    "firmware/kernel_1A543a.macho": 5888896,
+    "firmware/devicetree_m68ap.bin": 36864,
+    "firmware/rootfs_1A543a_act.img.gz.part0": 40606822,
+    "firmware/rootfs_1A543a_act.img.gz.part1": 40606821,
+    "firmware/home_1A543a_wifi.snap.gz.part0": 50202381,
+    "firmware/home_1A543a_wifi.snap.gz.part1": 50202380
   }
 }

@@ -34,6 +34,32 @@ static bool fail(s5l_os1_result_t *r, const char *fmt, ...) {
     return false;
 }
 
+/*
+ * The template tree leaves the Wi-Fi card's factory data zeroed, and the
+ * genuine AppleMRVL868x rejects both: an all-zero local-mac-address fails its
+ * start, and an all-zero tx-calibration fails its 128-byte validator. The
+ * same driver ACCEPTS a missing calibration property, so the property is
+ * renamed in place (the flat format cannot shrink) and the radio runs
+ * uncalibrated, which a virtual radio is. A non-zero MAC is left alone.
+ */
+static bool patch_wifi_node(uint8_t *tree, size_t len) {
+    size_t node = s5l_dt_path(tree, len, "arm-io/sdio");
+    uint32_t n = 0;
+    if (node == DT_NO_NODE) return false;
+    uint8_t *mac = s5l_dt_prop(tree, len, node, "local-mac-address", &n);
+    if (!mac || n != 6u) return false;
+    static const uint8_t zero[6];
+    if (!memcmp(mac, zero, 6)) memcpy(mac, S5L8900_M68_WIFI_MAC, 6);
+    uint8_t *cal = s5l_dt_prop(tree, len, node, "tx-calibration", &n);
+    if (cal) {
+        /* The value follows a 32-byte name and a 4-byte length. */
+        uint8_t *name = cal - 36;
+        if ((size_t)(name - tree) >= len) return false;
+        name[0] = 'x';
+    }
+    return true;
+}
+
 bool s5l_os1_boot(s5l8900_t *m, const s5l_os1_request_t *req,
                   s5l_os1_result_t *r) {
     if (!r) return false;
@@ -150,6 +176,8 @@ bool s5l_os1_boot(s5l8900_t *m, const s5l_os1_request_t *req,
         !s5l_dt_memmap_add(tree, req->devicetree_size, "RAMDisk",
                            r->ramdisk_va, rd_size))
         return fail(r, "missing RAMDisk memory-map slot");
+    if (m->sdio.present && !patch_wifi_node(tree, req->devicetree_size))
+        return fail(r, "cannot prepare /arm-io/sdio for the Wi-Fi card");
     for (unsigned i = 0; i < req->unmatch_count; i++) {
         const char *path = req->unmatch ? req->unmatch[i] : NULL;
         size_t node = path && *path ?

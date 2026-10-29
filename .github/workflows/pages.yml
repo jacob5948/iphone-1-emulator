@@ -1,0 +1,51 @@
+name: GitHub Pages
+
+# Publishes web/ as it is committed: the WebAssembly build, accelerator seed
+# and firmware are already in the tree, and CI verifies they match a fresh
+# build. Turn on Settings -> Pages -> Source: GitHub Actions once.
+#
+# Optional: set the repository variable RELAY_URL (Settings -> Secrets and
+# variables -> Actions -> Variables) to a wss:// netrelay address to give
+# visitors Wi-Fi by default. See tools/net/README.md.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: pages
+        uses: actions/configure-pages@v5
+      - name: Stage the site for this Pages address
+        env:
+          BASE_URL: ${{ steps.pages.outputs.base_url }}
+          RELAY_URL: ${{ vars.RELAY_URL }}
+        run: python3 tools/pages-site.py "$BASE_URL" "$RELAY_URL" _site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

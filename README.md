@@ -29,6 +29,9 @@ Many original apps still cannot complete their main tasks.
 - **Saved data:** the browser supports manual save, autosave, pause, backup export, and backup import.
   Tests cover selected recovery and saved-phone upgrade cases.
 - **Offline visits:** Keep offline stores the page, emulator, and verified firmware for disconnected reloads.
+- **Wi-Fi:** the original Marvell Wi-Fi driver runs on an emulated card.
+  Settings → Wi-Fi lists and joins "iPhone Virtual Wi-Fi", and Safari loads plain-HTTP pages.
+  The browser reaches the internet through a relay server; see [the network tools](tools/net/README.md).
 
 See the [app audit](plans/app-coverage.md) for tested workflows and their limits.
 The [engineering log](plans/execution.md) records later changes.
@@ -53,8 +56,9 @@ See the [service tools](tools/legacy_services/README.md) and
 
 1. **Speed:** reduce app launch delays and qualify typing, scrolling, and animation.
    Settings still exceeds the two-second warm-launch target in the recorded cloud baseline.
-2. **Networking:** complete a usable guest network connection and compatible app services.
-   General internet access, Maps, Mail, and modern service compatibility remain unfinished.
+2. **Networking:** Wi-Fi reaches the internet through a relay or the native `--net user` option.
+   WPA networks, modern HTTPS, Maps, Mail, and other retired app services remain unfinished.
+   Phones saved before Wi-Fi support need Reset to gain the Wi-Fi card.
 3. **Audio and video:** original system sounds (such as the lock click) now play through the modeled I2S clock, FIFO, and DMA.
    iPod music and YouTube playback have not been verified yet, and sound stutters when the emulator runs slower than real time.
    Genuine video playback remains unfinished.
@@ -119,11 +123,39 @@ It writes generated files to `web/dist/` and `web/jit/` and regenerates the offl
 These generated files are committed because Vercel serves `web/` as-is.
 Rebuild after you change browser files.
 
+To give the local phone internet access, also run the Wi-Fi relay
+(it needs `libslirp-dev` when you build):
+
+```sh
+build/tools/netrelay --port 8090
+```
+
+A page on `localhost` connects to it automatically.
+See [the network tools](tools/net/README.md) for public relays.
+
 The default [manifest](web/manifest.json) downloads firmware and a saved home state
-from `https://iphone.files.garden/`.
+from the site itself, out of `web/firmware/`.
 The browser checks each download against its recorded SHA-256 digest.
 It then restores the saved state instead of performing a full cold boot.
-Source copies of these firmware objects remain in `web/firmware/`.
+After you replace a firmware file, run `python3 tools/firmware/update_manifest.py`
+to record its new digest and size.
+To serve the files from another host, list full URLs in the manifest
+and add that host to `FIRMWARE_ORIGINS` in `web/assets.js`.
+
+## Publish on GitHub Pages
+
+`.github/workflows/pages.yml` publishes `web/` on every push to `main`.
+Turn it on once in the repository: Settings → Pages → Source: **GitHub Actions**.
+The workflow uses the committed WebAssembly build and firmware, so it needs no compiler.
+`tools/pages-site.py` points the page's sharing links at the Pages address
+and refreshes the offline bundle to match.
+
+To give visitors Wi-Fi by default, run a relay with TLS (see [the network tools](tools/net/README.md))
+and set the repository variable `RELAY_URL` to its `wss://` address
+(Settings → Secrets and variables → Actions → Variables), then run the workflow again.
+
+GitHub Pages has a soft bandwidth limit of 100 GB per month.
+Each new visitor downloads about 106 MB of firmware; returning visitors use their browser cache.
 
 ## Controls and saved data
 

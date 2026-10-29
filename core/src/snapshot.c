@@ -221,7 +221,12 @@ SNAP_SIZE_GUARD(s5l_mtz1_t,        1512,   "snap_mtz1");
 /* +232 bytes add the two host-only I2S transmit streams and the heap-owned PCM
  * ring's pointer and counters (232). Never serialised: snap_apply() resets the
  * streams, the ring belongs to the live frontend. Byte format unchanged. */
-SNAP_SIZE_GUARD(s5l8900_t,         127728, "snap_mach");
+/* +33056 bytes: the SDIO controller and Wi-Fi card (33040) plus the host's
+ * net_tx callback and context (16). The device travels in its own optional
+ * SDIO section (snap_sdio), not in MACH, so the v39 stream of a machine whose
+ * guest never touched it is unchanged; the callback is host wiring. */
+SNAP_SIZE_GUARD(s5l8900_t,         160784, "snap_mach");
+SNAP_SIZE_GUARD(s5l_sdio_t,        33040,  "snap_sdio");
 #endif
 
 /* ---------------------------------------------------------------- the IO --- */
@@ -235,6 +240,7 @@ SNAP_SIZE_GUARD(s5l8900_t,         127728, "snap_mach");
 #define TAG_NOR  TAG('N','O','R',' ')
 #define TAG_STUB TAG('S','T','U','B')
 #define TAG_END  TAG('E','N','D',' ')
+#define TAG_SDIO TAG('S','D','I','O')
 
 #define SNAP_HEADER_LEN 40u
 #define SNAP_PAGE       4096u
@@ -465,6 +471,13 @@ static void snap_cpu(sn_io_t *io, arm_cpu_t *c) {
         /* And generation 1, for the same reason arm_reset does: an entry at
          * generation 0 in a table whose counter is also 0 is a false hit. */
         c->tlb_gen = 1u;
+        /* And forget the registers the old table was walked under. Left
+         * alone, the stamp is whatever the machine last ran BEFORE this
+         * restore, so whether the first walk counts a flush would depend on
+         * history: two restores of one file would not count alike, and the
+         * browser's interpreter/JIT replay compares exactly these counters.
+         * No SCTLR value is all-ones, so this stamp can never match. */
+        memset(&c->tlb_stamp, 0xff, sizeof c->tlb_stamp);
     }
     F64(c->tlb_hits); F64(c->tlb_misses); F64(c->tlb_flushes);
     /*
@@ -1334,6 +1347,95 @@ static void snap_section(sn_io_t *io, uint32_t tag, snap_fn_t fn, s5l8900_t *m) 
 
 static void snap_end(sn_io_t *io, s5l8900_t *m) { (void)io; (void)m; }
 
+/*
+ * The SDIO controller and Wi-Fi card. An OPTIONAL section between STUB and
+ * END, written only once the guest has touched the controller, so that every
+ * machine whose guest never did (N82, and every M68 checkpoint taken before
+ * the device existed) still produces and accepts byte-identical v39 files.
+ * An older reader meets an unknown tag where it expects END and rejects the
+ * file as corrupt rather than misreading it. `present` is board wiring and is
+ * not in the file; it is checked against the live machine instead.
+ */
+static void snap_sdio(sn_io_t *io, s5l8900_t *m) {
+    s5l_sdio_t *d = &m->sdio;
+    F32(d->ctrl); F32(d->dctrl); F32(d->cmd); F32(d->arg); F32(d->status);
+    FA32(d->resp, 4);
+    F32(d->clkdiv); F32(d->csr); F32(d->irq); F32(d->irqmask);
+    F32(d->baddr); F32(d->blklen); F32(d->numblk);
+    FB(d->card_irq_seen); F32(d->data_ticks);
+    FB(d->data_armed); FB(d->data_write); FB(d->data_block);
+    F8(d->data_function); F32(d->data_count);
+    F8(d->card_state); F16(d->rca);
+    F8(d->io_enable); F8(d->int_enable); F8(d->bus_if);
+    F16(d->fn_block_size[0]); F16(d->fn_block_size[1]);
+    F8(d->host_config); F8(d->int_mask); F8(d->int_status);
+    F8(d->int_pending); F32(d->int_ticks);
+    F8(d->fw_stage); F16(d->fw_request); F32(d->fw_body_len);
+    F32(d->fw_helper_bytes); F32(d->fw_main_bytes); F32(d->fw_frames);
+    FBYTES(d->mac, 6); F16(d->mac_control);
+    FB(d->radio_on); FB(d->deep_sleep); FB(d->associated);
+    FBYTES(d->ap_bssid, 6); FBYTES(d->ap_ssid, WLAN_SSID_MAX);
+    F8(d->ap_ssid_len); F8(d->ap_channel);
+    { uint8_t rssi = (uint8_t)d->ap_rssi; F8(rssi); d->ap_rssi = (int8_t)rssi; }
+    FB(d->ap_enabled);
+    F32(d->up_head); F32(d->up_count);
+    for (unsigned i = 0; i < WLAN_UPLOAD_SLOTS; i++) F16(d->up_len[i]);
+    /* Only queued slots carry bytes; the rest are dead storage. */
+    for (unsigned i = 0; i < WLAN_UPLOAD_SLOTS; i++) {
+        uint16_t n = d->up_len[i];
+        if (n > WLAN_UPLOAD_MAX) { io->err = SNAP_ERR_CORRUPT; return; }
+        FBYTES(d->up_data[i], n);
+    }
+    F64(d->commands); F64(d->unknown_commands); F64(d->tx_frames);
+    F64(d->rx_frames); F64(d->rx_dropped); F64(d->data_errors);
+    F16(d->last_unknown_command);
+    if (sn_reading(io) && io->err == SNAP_OK &&
+        (!d->present || d->up_head >= WLAN_UPLOAD_SLOTS ||
+         d->up_count > WLAN_UPLOAD_SLOTS || d->card_state > 3u ||
+         d->fw_stage > WLAN_FW_RUNNING || d->ap_ssid_len > WLAN_SSID_MAX))
+        io->err = SNAP_ERR_CORRUPT;
+}
+
+static bool sdio_in_use(const s5l8900_t *m) {
+    const s5l_sdio_t *d = &m->sdio;
+    return d->present && (d->ctrl || d->card_state || d->fw_stage);
+}
+
+/* STUB is followed by END, or by SDIO and then END. Reading peeks the tag. */
+static void snap_tail(sn_io_t *io, s5l8900_t *m) {
+    if (io->err != SNAP_OK) return;
+    if (!sn_reading(io)) {
+        if (sdio_in_use(m)) snap_section(io, TAG_SDIO, snap_sdio, m);
+        snap_section(io, TAG_END, snap_end, m);
+        return;
+    }
+    uint32_t t = 0, zero = 0;
+    uint64_t len = 0;
+    sn_u32(io, &t); sn_u32(io, &zero); sn_u64(io, &len);
+    if (io->err != SNAP_OK) return;
+    if (zero != 0) { io->err = SNAP_ERR_CORRUPT; return; }
+    if (t == TAG_SDIO) {
+        uint64_t start = io->pos;
+        snap_sdio(io, m);
+        if (io->err != SNAP_OK) return;
+        if (io->pos - start != len) { io->err = SNAP_ERR_CORRUPT; return; }
+        snap_section(io, TAG_END, snap_end, m);
+        return;
+    }
+    if (t != TAG_END || len != 0) { io->err = SNAP_ERR_CORRUPT; return; }
+    /* A checkpoint from before the card existed, or whose guest never
+     * touched it: the card is as the board attached it, never enumerated.
+     * The board's MAC is kept; host AP policy is not guest state but lives
+     * here, so it survives too. */
+    if (io->mode == SN_LOAD && m->sdio.present) {
+        uint8_t mac[6];
+        bool ap = m->sdio.ap_enabled;
+        memcpy(mac, S5L8900_M68_WIFI_MAC, 6);
+        s5l_sdio_reset(&m->sdio, true, mac);
+        m->sdio.ap_enabled = ap;
+    }
+}
+
 static void snap_payload(sn_io_t *io, s5l8900_t *m) {
     snap_section(io, TAG_GEOM, snap_geom,    m);
     snap_section(io, TAG_CPU,  snap_cpu_sec, m);
@@ -1341,7 +1443,7 @@ static void snap_payload(sn_io_t *io, s5l8900_t *m) {
     snap_section(io, TAG_RAM,  snap_ram,     m);
     snap_section(io, TAG_NOR,  snap_nor_sec, m);
     snap_section(io, TAG_STUB, snap_stubs,   m);
-    snap_section(io, TAG_END,  snap_end,     m);
+    snap_tail(io, m);
 }
 
 static void snap_header(sn_io_t *io, uint64_t *payload_len) {

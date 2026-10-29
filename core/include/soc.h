@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "arm.h"
+#include "sdio.h"
 
 /* ------------------------------------------------------------ memory map
  *
@@ -3977,6 +3978,10 @@ typedef bool (*s5l_active_host_now_fn)(void *ctx, uint64_t *nanoseconds);
  * frontends leave them NULL, preserving the historical machine exactly.
  */
 typedef void (*s5l_uart4_host_tx_fn)(void *ctx, uint8_t byte);
+/* One Ethernet II frame the guest sent onto the virtual Wi-Fi network. Called
+ * on the CPU thread from inside a guest SDIO store; must not re-enter the
+ * machine. */
+typedef void (*s5l_net_tx_fn)(void *ctx, const uint8_t *frame, size_t len);
 typedef void (*s5l_uart4_host_service_fn)(void *ctx, unsigned retired);
 
 /* Do not hold an interactive execution slice inside WFI for longer than this.
@@ -4280,6 +4285,18 @@ typedef struct {
     uint8_t  *audio_ring;
     uint32_t  audio_rd, audio_fill;
     uint64_t  audio_dropped;
+
+    /*
+     * /arm-io/sdio and the 88W8686 Wi-Fi card behind it (M68 only; N82 leaves
+     * it absent). Appended rather than placed beside the other devices so that
+     * no existing field moves. Guest state, serialised in its own snapshot
+     * section; see core/include/sdio.h.
+     */
+    s5l_sdio_t sdio;
+    /* The virtual network's host end: Ethernet frames the guest transmits.
+     * Host wiring, never serialised, like the uart4 peer above. */
+    s5l_net_tx_fn net_tx;
+    void         *net_ctx;
 } s5l8900_t;
 
 /* Shifted-out PCM: interleaved signed 16-bit stereo at s5l8900_audio_rate().
@@ -4519,6 +4536,19 @@ bool s5l8900_set_uart4_host(s5l8900_t *m, s5l_uart4_host_tx_fn tx,
                             s5l_uart4_host_service_fn service, void *ctx);
 bool s5l8900_set_uart0_host(s5l8900_t *m, s5l_uart4_host_tx_fn tx,
                             void *ctx);
+
+/*
+ * The virtual Wi-Fi network (M68). set_net_tx installs the sink for frames
+ * the guest transmits (NULL detaches; frames are then dropped). net_rx hands
+ * the guest one Ethernet II frame; it returns false, and counts a drop, when
+ * the guest is not associated or its receive queue is full. Both must be
+ * called between run slices, on the CPU thread. wifi_set_ap takes the virtual
+ * access point on or off the air.
+ */
+void s5l8900_set_net_tx(s5l8900_t *m, s5l_net_tx_fn tx, void *ctx);
+bool s5l8900_net_rx(s5l8900_t *m, const uint8_t *frame, size_t len);
+void s5l8900_wifi_set_ap(s5l8900_t *m, bool enabled);
+bool s5l8900_wifi_associated(const s5l8900_t *m);
 
 /*
  * ram_base/ram_size define where RAM appears. Returns false on allocation
